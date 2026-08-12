@@ -133,7 +133,7 @@ fn inspector_entry() -> InspectorEntry {
             }
         }),
         fields: vec![
-            renzora::float_field!("Intensity", VignetteSettings, intensity, 0.01, 0.0, 5.0),
+            renzora::float_field!("Intensity", VignetteSettings, intensity, 0.01, 0.0, 1.0),
             renzora::float_field!("Radius", VignetteSettings, radius, 0.01, 0.0, 2.0),
             renzora::float_field!("Smoothness", VignetteSettings, smoothness, 0.05, 0.0, 20.0),
             renzora::float_field!("Roundness", VignetteSettings, roundness, 0.01, 0.0, 1.0),
