@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::sync::{mpsc, Mutex};
 
+use crate::kinds::QueuedAsset;
 use bevy::prelude::*;
 use renzora::core::CurrentProject;
 use renzora_import::optimize::MeshOptSettings;
@@ -75,7 +76,7 @@ pub(crate) struct ImportTask {
 #[derive(Resource)]
 pub struct ImportOverlayState {
     pub visible: bool,
-    pub pending_files: Vec<PathBuf>,
+    pub pending_files: Vec<QueuedAsset>,
     pub target_directory: String,
     /// How imported files are organized under the destination folder.
     pub layout: ImportLayout,
@@ -109,6 +110,60 @@ impl Default for ImportOverlayState {
             toast_active: false,
             toast_dismiss_at: None,
         }
+    }
+}
+
+impl ImportOverlayState {
+    /// Append `assets` to the queue, skipping any whose source path is already
+    /// queued, and auto-detect the unit scale when the queue starts empty.
+    /// Returns whether anything new was added.
+    ///
+    /// Both entry points (the drop handler in `lib.rs` and the overlay's own
+    /// Browse buttons in `native.rs`) funnel through here so they can't drift
+    /// apart — they previously had two copies of this that disagreed about
+    /// which file the scale is read from.
+    ///
+    /// The de-dup uses a set rather than a linear scan per item: a folder
+    /// import can queue thousands of files at once, and the quadratic version
+    /// spent that as several million `PathBuf` comparisons on the main thread.
+    pub(crate) fn enqueue(&mut self, assets: &[QueuedAsset]) -> bool {
+        if assets.is_empty() {
+            return false;
+        }
+        let was_empty = self.pending_files.is_empty();
+        let mut seen: std::collections::HashSet<&std::path::Path> =
+            self.pending_files.iter().map(|q| q.path.as_path()).collect();
+        let mut added = Vec::new();
+        for asset in assets {
+            if seen.insert(asset.path.as_path()) {
+                added.push(asset.clone());
+            }
+        }
+        if added.is_empty() {
+            return false;
+        }
+        // Auto-detect the unit scale from the first *model* in a fresh queue.
+        // Scanning for one matters for folder imports: the queue is sorted by
+        // path, so entry zero is usually a texture, and `detect_unit_scale`
+        // returns None for every non-model.
+        if was_empty && self.settings.scale == 1.0 {
+            if let Some(scale) = added
+                .iter()
+                .find_map(|q| renzora_import::units::detect_unit_scale(&q.path))
+            {
+                self.settings.scale = scale;
+            }
+        }
+        // Clear a stale "No importable files in …" once the queue actually has
+        // something, so the message line doesn't contradict the list under it.
+        // Only while no toast is up: `manage_import_toast` waits on a terminal
+        // progress state to auto-dismiss, and resetting it out from under a
+        // live toast would strand it on screen.
+        if !self.toast_active && matches!(self.progress, ImportProgress::Error(_)) {
+            self.progress = ImportProgress::Idle;
+        }
+        self.pending_files.extend(added);
+        true
     }
 }
 
@@ -258,6 +313,33 @@ pub(crate) fn run_import(world: &mut World) {
     });
 }
 
+/// Join `dest` with a forward-slashed relative directory from a folder import.
+///
+/// `.` and `..` segments are dropped rather than walked. A filesystem walk
+/// can't produce them, but `QueuedAsset::relative_dir` is a public field on a
+/// public resource, so anything in the editor can push an entry — and joining
+/// a `..` here would write outside the project.
+fn dest_with_rel(dest: &std::path::Path, relative_dir: &str) -> PathBuf {
+    if relative_dir.is_empty() {
+        return dest.to_path_buf();
+    }
+    relative_dir
+        .split('/')
+        .filter(|s| !s.is_empty() && *s != "." && *s != "..")
+        .fold(dest.to_path_buf(), |acc, seg| acc.join(seg))
+}
+
+/// Project-relative forward-slashed prefix for a file landing under `target_dir`
+/// (plus an optional mirrored source subdirectory from a folder import).
+fn project_prefix(target_dir: &str, relative_dir: &str) -> String {
+    match (target_dir.is_empty(), relative_dir.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => relative_dir.to_string(),
+        (false, true) => target_dir.to_string(),
+        (false, false) => format!("{target_dir}/{relative_dir}"),
+    }
+}
+
 /// Pick a file path under `dest` that doesn't collide. If `name` is taken,
 /// inserts `1`, `2`, … before the extension (`tex.png` → `tex1.png`). Used by
 /// the copy path for non-model assets, which land directly in the destination
@@ -304,7 +386,7 @@ fn unique_model_dir(dest: &std::path::Path, base: &str) -> (String, PathBuf) {
 fn import_worker(
     tx: mpsc::Sender<ImportMsg>,
     project: CurrentProject,
-    files: Vec<PathBuf>,
+    files: Vec<QueuedAsset>,
     settings: ImportSettings,
     target_dir: String,
     layout: ImportLayout,
@@ -324,25 +406,41 @@ fn import_worker(
     let mut errors = Vec::new();
     let mut all_warnings = Vec::new();
 
-    for (i, source_path) in files.iter().enumerate() {
+    for (i, item) in files.iter().enumerate() {
+        let source_path = &item.path;
         let file_name = source_path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown")
             .to_string();
 
+        // Folder imports recreate the source tree under `dest`; single-file
+        // picks land flat in `dest` (relative_dir empty).
+        let file_dest = dest_with_rel(&dest, &item.relative_dir);
+        if let Err(e) = std::fs::create_dir_all(&file_dest) {
+            let msg = format!("failed to create folder: {}", e);
+            errors.push(format!("{}: {}", file_name, msg));
+            let _ = tx.send(ImportMsg::Log(ImportLogEntry {
+                file_name: file_name.clone(),
+                success: false,
+                message: msg,
+            }));
+            continue;
+        }
+        let target_prefix = project_prefix(&target_dir, &item.relative_dir);
+
         // Non-model assets have no conversion step. "Importing" one just copies
         // it verbatim into the destination folder the user picked — images,
         // audio, `.bsn`, `.particle`, `.material`, fonts and scripts all take
         // this path. The layout / extract / optimize options are model-only, so
-        // copies always land directly in `dest` (no per-stem subfolder).
+        // copies always land directly in `file_dest` (no per-stem subfolder).
         if renzora_import::formats::detect_format(source_path).is_none() {
             let _ = tx.send(ImportMsg::Progress {
                 current: i + 1,
                 total,
                 label: format!("Copying {}", file_name),
             });
-            let out = unique_file(&dest, &file_name);
+            let out = unique_file(&file_dest, &file_name);
             match std::fs::copy(source_path, &out) {
                 Ok(bytes) => {
                     imported += 1;
@@ -424,13 +522,14 @@ fn import_worker(
                 //     its assets stay isolated from other imports.
                 //   Combined — every file writes straight into the destination,
                 //     so derived assets merge into shared sibling folders.
+                // Both are rooted at `file_dest` (mirrors folder imports).
                 let base_stem = source_path
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or("model");
                 let (stem_owned, model_dir) = match layout {
-                    ImportLayout::PerFileFolder => unique_model_dir(&dest, base_stem),
-                    ImportLayout::Combined => (base_stem.to_string(), dest.clone()),
+                    ImportLayout::PerFileFolder => unique_model_dir(&file_dest, base_stem),
+                    ImportLayout::Combined => (base_stem.to_string(), file_dest.clone()),
                 };
                 let stem: &str = &stem_owned;
                 if let Err(e) = std::fs::create_dir_all(&model_dir) {
@@ -456,13 +555,15 @@ fn import_worker(
                     let rewrite_uri = |uri: &Option<String>| -> Option<String> {
                         // Textures live under the model folder. Prefix the
                         // relative URI with that folder's path from the project
-                        // root so consumers can resolve it. The model folder is
-                        // `<target>/<stem>/` (PerFileFolder) or `<target>/`
-                        // (Combined).
+                        // root so consumers can resolve it.
                         let prefix = match layout {
-                            ImportLayout::PerFileFolder if target_dir.is_empty() => stem.to_string(),
-                            ImportLayout::PerFileFolder => format!("{}/{}", target_dir, stem),
-                            ImportLayout::Combined => target_dir.clone(),
+                            ImportLayout::PerFileFolder if target_prefix.is_empty() => {
+                                stem.to_string()
+                            }
+                            ImportLayout::PerFileFolder => {
+                                format!("{}/{}", target_prefix, stem)
+                            }
+                            ImportLayout::Combined => target_prefix.clone(),
                         };
                         uri.as_ref().map(|u| {
                             if prefix.is_empty() {
@@ -658,8 +759,8 @@ fn import_worker(
                     .and_then(|s| s.to_str())
                     .unwrap_or("model");
                 let (stem_owned, fallback_model_dir) = match layout {
-                    ImportLayout::PerFileFolder => unique_model_dir(&dest, base_stem),
-                    ImportLayout::Combined => (base_stem.to_string(), dest.clone()),
+                    ImportLayout::PerFileFolder => unique_model_dir(&file_dest, base_stem),
+                    ImportLayout::Combined => (base_stem.to_string(), file_dest.clone()),
                 };
                 let _stem: &str = &stem_owned;
                 let anim_dir = fallback_model_dir.join("animations");
@@ -759,5 +860,37 @@ fn import_worker(
             total,
             errors.len()
         )));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dest_with_rel_mirrors_the_source_tree() {
+        let dest = std::path::Path::new("proj").join("models");
+        assert_eq!(dest_with_rel(&dest, ""), dest);
+        assert_eq!(
+            dest_with_rel(&dest, "Pack/textures"),
+            dest.join("Pack").join("textures")
+        );
+        // Empty and traversal segments are dropped, never walked.
+        assert_eq!(dest_with_rel(&dest, "Pack//textures"), dest.join("Pack").join("textures"));
+        assert_eq!(dest_with_rel(&dest, "../../etc"), dest.join("etc"));
+        assert_eq!(dest_with_rel(&dest, "./Pack"), dest.join("Pack"));
+    }
+
+    #[test]
+    fn project_prefix_covers_every_target_relative_combination() {
+        // Project root + single-file pick: no prefix at all.
+        assert_eq!(project_prefix("", ""), "");
+        // Project root + folder import: the mirrored subtree is the prefix.
+        assert_eq!(project_prefix("", "Pack/textures"), "Pack/textures");
+        // Chosen target + single-file pick: the old (pre-folder) behaviour.
+        assert_eq!(project_prefix("models", ""), "models");
+        // Both — the case that decides where extracted material textures
+        // resolve from, so it's the one worth pinning down.
+        assert_eq!(project_prefix("models", "Pack/textures"), "models/Pack/textures");
     }
 }

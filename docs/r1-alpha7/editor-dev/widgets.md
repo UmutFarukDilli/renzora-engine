@@ -77,6 +77,26 @@ app.register_panel_content("my_panel", true, |commands, fonts| {
 });
 ```
 
+### Blocking the pointer
+
+**A widget that owns a press needs an explicit `FocusPolicy::Block`.** Since Bevy 0.19, `Node` *requires* `FocusPolicy`, and that component's `Default` is `Pass` — so a node you never gave a policy to does not capture the pointer. bevy_ui walks every node under the cursor front-to-back and marks them all `Interaction::Pressed` until it meets one that blocks, which means a plain button hands its press to whatever sits behind it, **its own ancestors included**:
+
+```rust
+commands.spawn((
+    Node { /* … */ },
+    Interaction::default(),
+    FocusPolicy::Block,   // ← without this, the press also lands on the row,
+    MyButton,             //   card or panel this button is sitting inside
+));
+```
+
+This is the opposite of the pre-0.19 default, so it reads as "extra ceremony" and is easy to leave off. What it costs when you do: the splash launcher's ✕ removed a recent project *and* opened it, because the row behind the ✕ is the "open this project" hit-box (GH #82); a press on any splash button also reached the whole-window drag handle underneath it; the tutorial card's Skip button also started dragging the card.
+
+Two things that are **not** affected, and shouldn't be "fixed" with `Block`:
+
+- **Layout scaffolding.** Wrappers, spacers, text and icons inside a button want `Pass` (their default) — that's how a click on a button's label reaches the button. Marking them `Block` breaks the widget.
+- **`RelativeCursorPosition`.** Bevy fills `cursor_over` for *every* node containing the pointer, whoever captures the press. Hover *visuals* on a container that holds its own interactive children should read `cursor_over`, not `Interaction` — otherwise the container flattens out the moment the cursor crosses onto a child that blocks. (Ember's `correct_pointer_state` already clears `cursor_over` for anything clipped by a scroll area or covered by an overlay, so it stays trustworthy.)
+
 ## The built-in widget library
 
 `renzora_ember::widgets` ships ~80 widget modules, each a builder fn (or several) plus the interaction system that animates its state. They are registered by `WidgetsPlugin`. Import them with `use renzora_ember::widgets::*;`. A representative selection:
@@ -232,7 +252,7 @@ Three things it handles that `Node.left += delta` does not:
 - **Staying reachable.** A card flung past the window edge takes its close button with it, so the position is clamped to keep a margin on screen.
 - **Release anywhere.** The drag ends on mouse-button release, not on `Interaction`, so moving faster than the handle follows doesn't silently drop it.
 
-Used by the onboarding tutorial's card, which parks bottom-right — occasionally right on top of the thing a step is pointing at. It puts the handle on the **whole header strip** rather than the grip alone (a 13px glyph is a fussy target for something you reach for precisely when the card is in your way); the Skip button inside that header still gets its own press, because bevy_ui only marks the topmost node under the cursor as hovered.
+Used by the onboarding tutorial's card, which parks bottom-right — occasionally right on top of the thing a step is pointing at. It puts the handle on the **whole header strip** rather than the grip alone (a 13px glyph is a fussy target for something you reach for precisely when the card is in your way); the Skip and close buttons inside that header carry `FocusPolicy::Block` so their press doesn't also start a drag — see *Blocking the pointer* below.
 
 ### Folder picker (`folder_picker`)
 
@@ -258,7 +278,9 @@ The `code_editor` widget is a monospace, syntax-highlighted, editable text view.
 
 **Colors are themed.** Every token color and editor-chrome color comes from the active theme's `[syntax]` section via ember's `SyntaxPalette` — see *Theming → Code-editor syntax colors*. Editing them in Settings → Theme recolors the open editor live.
 
-**Editor chrome.** Each render lays absolute-positioned overlays into the body in back-to-front order: the **current-line highlight** (`current_line`, full viewport width), **indent guides** (`indent_guide`, a vertical rule at each interior indent stop — `TAB_WIDTH` = 4 cols), the **selection** rects (`selection`), and **matching-bracket** boxes (`bracket_match`, shown when the caret is next to a bracket and has no selection; the match is found nesting-aware across lines, bounded so a huge file can't stall the render). Then the colored text rows paint on top.
+**Editor chrome.** Each row carries its own absolute-positioned overlays, spawned back-to-front ahead of the row's gutter and text: the **current-line highlight** (`current_line`, full viewport width), **indent guides** (`indent_guide`, a vertical rule at each interior indent stop — `TAB_WIDTH` = 4 cols), the **selection** rect (`selection`), and **matching-bracket** boxes (`bracket_match`, shown when the caret is next to a bracket and has no selection; the match is found nesting-aware across lines, bounded so a huge file can't stall the render).
+
+**Rendering is incremental.** `code_render` hashes everything a row draws — its token spans and colors, gutter number, fold state, chrome overlays, and the shared metrics/palette epoch — and a row whose hash is unchanged is left completely untouched: no despawn, no respawn, no relayout, and no text re-shaping. This matters because every keystroke dirties the editor, so a full rebuild ran at frame rate while a key was held (~500 entities per frame, which cost enough to drop the editor to ~25 FPS); an edit now rebuilds only the row it changed. Rows are appended to and popped from the tail only, keeping child order equal to visual order. The chrome overlays live on the row for the same reason — as body-level overlays they had to be rebuilt whenever any row changed.
 
 **Sizing is zoom-aware.** All metrics — line height, gutter width, caret height, and the character advance — are derived from the live `font_size` (logical px) the host pushes through the binding (`CodeEditorState.font_size`, driven by Ctrl +/- and the Settings code-font size). There are no hardcoded pixel sizes.
 

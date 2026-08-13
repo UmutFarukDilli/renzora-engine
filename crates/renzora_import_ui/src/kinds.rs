@@ -17,7 +17,7 @@
 //! UI-side routing decision — model detection still delegates to
 //! `renzora_import::formats`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The category a to-be-imported file belongs to. Only [`AssetKind::Model`]
 /// needs conversion; every other variant is copied as-is.
@@ -192,6 +192,98 @@ pub fn kind_icon(path: &Path) -> (&'static str, (u8, u8, u8)) {
     }
 }
 
+/// A path queued for import, optionally carrying the source-tree subdirectory
+/// it should recreate under the destination.
+///
+/// Folder imports (Browse folder / drop a directory) fill [`relative_dir`] so
+/// `Pack/textures/a.png` lands as `<target>/Pack/textures/a.png` instead of
+/// flattening everything into `<target>/`. Single-file picks leave it empty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueuedAsset {
+    pub path: PathBuf,
+    /// Forward-slashed directory under the import target (includes the selected
+    /// folder's name + any subfolders). Empty = land directly in the target.
+    /// Does **not** include the filename.
+    pub relative_dir: String,
+}
+
+impl QueuedAsset {
+    pub fn flat(path: PathBuf) -> Self {
+        Self {
+            path,
+            relative_dir: String::new(),
+        }
+    }
+}
+
+/// Collect every importable file under `path`. A single file is returned as a
+/// flat queue entry when it passes [`is_importable`]; a directory is walked
+/// recursively and every matching file keeps its path relative to that
+/// directory (including the directory's own name), so the import worker can
+/// mirror the tree under the destination.
+pub(crate) fn expand_importables(path: &Path) -> Vec<QueuedAsset> {
+    if path.is_file() {
+        return if is_importable(path) {
+            vec![QueuedAsset::flat(path.to_path_buf())]
+        } else {
+            Vec::new()
+        };
+    }
+    if !path.is_dir() {
+        return Vec::new();
+    }
+    // Include the selected folder's name so two packs don't collide when both
+    // have a top-level `textures/` — Unreal-style "import this folder as a
+    // subtree".
+    let root_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("import");
+    let mut out = Vec::new();
+    let mut stack = vec![path.to_path_buf()];
+    // Symlinked directories are followed (an asset pack may legitimately link
+    // a shared `textures/`), so the walk needs its own cycle guard: a link
+    // pointing at an ancestor otherwise loops until the editor runs out of
+    // memory, with no way to cancel — this walk is synchronous on the main
+    // thread. Canonicalizing collapses links to their real target, so a
+    // directory already visited under a different name is recognised.
+    let mut visited: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    visited.insert(std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()));
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                let real = std::fs::canonicalize(&p).unwrap_or_else(|_| p.clone());
+                if visited.insert(real) {
+                    stack.push(p);
+                }
+            } else if is_importable(&p) {
+                let Ok(rel) = p.strip_prefix(path) else {
+                    continue;
+                };
+                let relative_dir = match rel.parent().filter(|par| !par.as_os_str().is_empty()) {
+                    Some(par) => {
+                        let sub = par.to_string_lossy().replace('\\', "/");
+                        format!("{root_name}/{sub}")
+                    }
+                    None => root_name.to_string(),
+                };
+                out.push(QueuedAsset {
+                    path: p,
+                    relative_dir,
+                });
+            }
+        }
+    }
+    // Stable order so a folder re-import queues the same way twice (read_dir
+    // order is filesystem-dependent).
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    out
+}
+
 /// Open the OS file picker filtered to everything the importer accepts. Returns
 /// the chosen paths (empty/`None` if the user cancelled). Blocking — the caller
 /// runs it on `&mut World`, same as the old model-only Browse button.
@@ -213,6 +305,24 @@ pub(crate) fn pick_importable_files() -> Option<Vec<std::path::PathBuf>> {
         .add_filter("All Files", &["*"])
         .pick_files()
         .filter(|p| !p.is_empty())
+}
+
+/// Open the OS folder picker and expand it to every importable file underneath,
+/// preserving the folder tree via [`QueuedAsset::relative_dir`]. `None` = the
+/// user cancelled.
+///
+/// A folder holding nothing importable comes back as the picked path with an
+/// empty list rather than `None`: the caller needs to tell "cancelled" (say
+/// nothing) apart from "picked, found nothing" (say so, with the folder's
+/// name) — silently doing nothing after the user confirms a folder is
+/// indistinguishable from a broken button.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn pick_importable_folder() -> Option<(PathBuf, Vec<QueuedAsset>)> {
+    let dir = rfd::FileDialog::new()
+        .set_title("Select folder to import")
+        .pick_folder()?;
+    let files = expand_importables(&dir);
+    Some((dir, files))
 }
 
 #[cfg(test)]
@@ -285,6 +395,55 @@ mod tests {
         .unwrap();
         assert_eq!(detect_kind(&p), Some(AssetKind::Model));
         std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn expand_importables_walks_folders() {
+        let root = std::env::temp_dir().join("renzora_kinds_expand_test");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("a.png"), b"x").unwrap();
+        std::fs::write(root.join("sub").join("b.glb"), b"x").unwrap();
+        std::fs::write(root.join("skip.txt"), b"x").unwrap();
+        std::fs::write(root.join("sub").join("also.wav"), b"x").unwrap();
+
+        let got = expand_importables(&root);
+        assert_eq!(got.len(), 3, "expected png+glb+wav, got {:?}", got);
+        assert!(got.iter().all(|q| is_importable(&q.path)));
+
+        let root_name = root.file_name().unwrap().to_str().unwrap();
+        let a = got.iter().find(|q| q.path.ends_with("a.png")).unwrap();
+        assert_eq!(a.relative_dir, root_name);
+        let b = got.iter().find(|q| q.path.ends_with("b.glb")).unwrap();
+        assert_eq!(b.relative_dir, format!("{root_name}/sub"));
+
+        // Single file path stays flat (no mirrored subtree).
+        let flat = expand_importables(&root.join("a.png"));
+        assert_eq!(flat.len(), 1);
+        assert!(flat[0].relative_dir.is_empty());
+        assert!(expand_importables(&root.join("skip.txt")).is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A directory symlink pointing back at an ancestor used to make the walk
+    /// loop forever. Unix-only because creating a symlink on Windows needs
+    /// developer mode or elevation; the guard itself is platform-independent
+    /// and CI runs Linux.
+    #[cfg(unix)]
+    #[test]
+    fn expand_importables_survives_a_symlink_cycle() {
+        let root = std::env::temp_dir().join("renzora_kinds_cycle_test");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("sub").join("a.png"), b"x").unwrap();
+        std::os::unix::fs::symlink(&root, root.join("sub").join("loop")).unwrap();
+
+        // Terminates, and the file behind the cycle is still found exactly once.
+        let got = expand_importables(&root);
+        assert_eq!(got.len(), 1, "expected one file, got {:?}", got);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
