@@ -69,7 +69,7 @@ What you can do here:
 - **Right-click** for duplicate, delete, or rename.
 - Click the **eye** to hide an item, or the **lock** to stop accidental edits.
 
-Selecting an item here highlights it in the viewport and fills in the Inspector. See [Scenes & Hierarchy](/docs/r1-alpha5/editor/scenes) for more.
+Selecting an item here highlights it in the viewport and fills in the Inspector. See [Scenes & Hierarchy](/docs/r1-alpha7/editor/scenes) for more.
 
 ## The Inspector
 
@@ -83,7 +83,7 @@ In the shot above you can see common components:
 - **Visibility** — show or hide the object.
 - **Directional Light** — brightness, color, and shadows.
 
-Type new numbers into any field to change them live. Use **Add** at the top to attach more components (a physics body, a script, a custom one your plugins provide). For the full list of what each component does, see the [Inspector](/docs/r1-alpha5/editor/inspector) docs.
+Type new numbers into any field to change them live. Use **Add** at the top to attach more components (a physics body, a script, a custom one your plugins provide). For the full list of what each component does, see the [Inspector](/docs/r1-alpha7/editor/inspector) docs.
 
 ## The 3D viewport
 
@@ -91,7 +91,7 @@ The **viewport** is your window into the world. Click an object to select it, an
 
 ![The 3D viewport with a parked scooter selected in a street scene; a colored transform gizmo and selection outline let you move, rotate, or scale the object directly.](/assets/previews/viewport.png)
 
-The toolbar at the top of the viewport switches your tool between **Select**, **Translate** (move), **Rotate**, and **Scale**. To look around, orbit, fly, and zoom with the mouse — the full controls are listed in [Viewport & Camera](/docs/r1-alpha5/editor/viewport). You can even open up to four viewports at once to see your scene from different angles.
+The toolbar at the top of the viewport switches your tool between **Select**, **Translate** (move), **Rotate**, and **Scale**. To look around, orbit, fly, and zoom with the mouse — the full controls are listed in [Viewport & Camera](/docs/r1-alpha7/editor/viewport). You can even open up to four viewports at once to see your scene from different angles.
 
 ## The Console
 
@@ -101,7 +101,7 @@ The **Console** is where the engine talks to you. Messages stream in as you work
 
 Use the filter buttons to show only warnings or errors, search to find a message, and the box at the bottom to type **slash commands** (start with `/help` to see what's available).
 
-The Console keeps the most recent **100** messages by default and drops the oldest as new ones arrive — a deliberately small cap, because each retained message is a row the panel has to lay out, and a very long backlog can cost frames. Want deeper scrollback? Raise **Settings → Editor → Developer → Console Log Limit** (identical messages already collapse into one row with a count, so the limit measures distinct entries).
+The Console keeps the most recent **100** messages by default and drops the oldest as new ones arrive — a deliberately small cap, because each retained message is a row the panel has to lay out, and a very long backlog can cost frames. Want deeper scrollback? Raise **Settings → General → Developer → Console Log Limit** (identical messages already collapse into one row with a count, so the limit measures distinct entries).
 
 ## The Assets browser
 
@@ -117,6 +117,31 @@ What you can do here:
 - To rename a file or folder inline, press **`F2`**, **click its name** while it's already selected, or pick **Rename** from the right-click menu. The whole name starts highlighted, so typing (or `Delete`) replaces it; press `Enter` to confirm or `Esc` to cancel.
 - Use the toolbar to **Add** a new asset, **Import**, create a **New Folder**, change the **sort** order, switch between **grid and list** views, and zoom the tiles. The **Add** menu (and the right-click menu) creates a **Material**, **Blueprint**, **Lua Script**, **Rhai Script**, **Particle**, **Template** (HTML markup UI), or **Scene (BSN)** — each row color-coded to match its file type's accent on the tiles.
 
+## Settings
+
+`Ctrl+,` (or the ⚙ button beside the hamburger) opens **Settings**: a search box and a category list on the left, the settings themselves on the right. A category is a *page* — it stacks one or more collapsible **sections**, so related settings stay together instead of each one costing you a trip back to the sidebar.
+
+| Group | Category | Sections |
+|---|---|---|
+| **Project** | Project | Project, Global Scenes |
+| | Window | Window, Render Resolution |
+| | Rendering | 3D Rendering, 2D Rendering |
+| **Appearance** | Interface | Fonts, Language, Display, Hierarchy, Inspector, UI Workspace |
+| | Theme | Active Theme, Semantic Colors, Surfaces, Text, Widgets, Panels, Syntax Tokens, Editor Chrome, Widget Styles |
+| **Editor** | General | Developer, Renderer, Import |
+| | Auto-Save | Auto-Save |
+| | Viewport | Grid, Labels, Performance |
+| | Camera | Camera |
+| | Gizmos | Gizmos |
+| | Scripting | Scripting, Code Editor |
+| **Controls** | Input | Input actions and their bindings |
+| | Shortcuts | One section per shortcut category |
+| **Plugins** | *one per plugin* | Whatever the plugin registers |
+
+Everything under **Project** is stored in the project's `project.toml` and travels with the project; everything else is per-user, in `~/.renzora/editor.toml`.
+
+**Window vs Render Resolution** trips people up, because both have a width and a height. The **window** is the OS surface your shipped game opens — its size, whether it's resizable, and windowed / fullscreen / borderless. The **render resolution** is what the camera actually renders at before being scaled onto that window, and it only takes effect once **Stretch Mode** is set to *Viewport*. Leave Stretch Mode disabled and the two are the same thing. Turn it on and set the resolution to, say, 320×180, and you get chunky pixel-art upscaled to a 1080p window.
+
 ## Scaling the UI
 
 If the editor looks too small (or too large) on your monitor, open **Settings → Interface** (`Ctrl+,`) and pick a **UI Scale** under *Display* — from 75% to 300%, applied instantly on top of your OS DPI setting. The choice is saved per user, so it sticks across projects and restarts. If you ever pick a scale that makes things awkward, press `Ctrl+0` to snap back to 100%.
@@ -130,6 +155,6 @@ A couple of shortcuts you'll use constantly:
 
 ## What's next?
 
-Now that you can find your way around, learn about [Core Concepts](/docs/r1-alpha5/getting-started/concepts) — entities, components, scenes, and how scripts attach to them.
+Now that you can find your way around, learn about [Core Concepts](/docs/r1-alpha7/getting-started/concepts) — entities, components, scenes, and how scripts attach to them.
 
-Want to build your own editor panels or dig into the architecture? That's covered in the advanced [Building Editor Panels](/docs/r1-alpha5/editor-dev/panels) guide.
+Want to build your own editor panels or dig into the architecture? That's covered in the advanced [Building Editor Panels](/docs/r1-alpha7/editor-dev/panels) guide.

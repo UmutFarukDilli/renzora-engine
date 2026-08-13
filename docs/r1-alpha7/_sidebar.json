@@ -61,6 +61,7 @@
           "category": "Publishing Your Game",
           "pages": [
             { "slug": "exporting/overview", "title": "Export Overview" },
+            { "slug": "exporting/cross-platform", "title": "Exporting to Other Platforms" },
             { "slug": "exporting/windows", "title": "Windows" },
             { "slug": "exporting/linux", "title": "Linux" },
             { "slug": "exporting/macos", "title": "macOS" },
@@ -150,6 +151,7 @@
             { "slug": "rendering/pipeline", "title": "Render Pipeline" },
             { "slug": "rendering/shaders", "title": "WGSL Shaders" },
             { "slug": "rendering/camera", "title": "Camera System" },
+            { "slug": "rendering/water", "title": "Water & Oceans" },
             { "slug": "rendering/2d-lighting", "title": "2D Lighting" },
             { "slug": "rendering/gaussian-splatting", "title": "Gaussian Splatting" }
           ]

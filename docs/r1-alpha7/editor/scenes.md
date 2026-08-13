@@ -154,7 +154,7 @@ main_scene = "scenes/main.ron"
 
 You can also mark scenes **global**: they load *before* the main scene and stay alive the whole time, surviving every later scene change. Use one per concern — a HUD scene, a music scene, a networking scene — rather than duplicating that content in every level.
 
-Set them in **Settings → Global Scenes** (a toggle per scene in `scenes/`), which writes the `autoload` list:
+Set them in **Settings → Project → Global Scenes** (a toggle per scene in `scenes/`), which writes the `autoload` list:
 
 ```toml
 main_scene = "scenes/main.ron"
@@ -171,7 +171,7 @@ The document tabs across the top of the editor — scenes, plus any materials, s
 
 This is stored in `project.toml` (`editor_last_scene` and `editor_open_tabs`), so it travels with the project, and it's stripped from exported games.
 
-> Good to know: only objects with a name are saved, and the editor leaves out runtime-only data (like rebuilt physics colliders and render handles) because the engine recreates it automatically when the scene loads. For the full technical breakdown, see [Project Structure](/docs/r1-alpha5/setup/project-structure) and [Components](/docs/r1-alpha5/engine-core/components).
+> Good to know: only objects with a name are saved, and the editor leaves out runtime-only data (like rebuilt physics colliders and render handles) because the engine recreates it automatically when the scene loads. For the full technical breakdown, see [Project Structure](/docs/r1-alpha7/setup/project-structure) and [Components](/docs/r1-alpha7/engine-core/components).
 
 ## Reusing scenes inside scenes
 

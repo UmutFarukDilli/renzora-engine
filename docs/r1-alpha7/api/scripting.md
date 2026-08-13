@@ -2,7 +2,7 @@
 
 The authoritative reference for every global, function, lifecycle hook, and `action()` verb exposed to Lua and Rhai scripts.
 
-This page documents the surface registered by `crates/renzora_scripting` (`backends/lua.rs`, `backends/rhai.rs`, `command.rs`) plus the functions injected by domain crates. For a guided introduction see [Lua](/docs/r1-alpha5/scripting/lua), [Rhai](/docs/r1-alpha5/scripting/rhai), and the [Scripting Overview](/docs/r1-alpha5/scripting/overview).
+This page documents the surface registered by `crates/renzora_scripting` plus the functions injected by domain crates. For a guided introduction see [Lua](/docs/r1-alpha7/scripting/lua) and the [Scripting Overview](/docs/r1-alpha7/scripting/overview).
 
 ## How the API is dispatched
 
@@ -42,7 +42,7 @@ Define any of these free functions; the engine calls the ones that exist. None a
 
 > **The scene hooks only reach `Persistent` scripts.** A scene load despawns the outgoing scene's entities partway through, so a script that lives in the scene being replaced is already gone when its successor arrives. Put scene-transition logic on a global scene (see [Global scenes](../engine-core/resources#cross-scene-state)) — that is the entire reason a loading screen has to live outside the scene it is covering.
 
-> There is **no** `on_start`, `on_collision`, or `on_destroy` hook. Use `on_ready` for setup and read the `is_colliding` global for overlap state. Collision *events* exist only as [Blueprint](/docs/r1-alpha5/scripting/blueprints) nodes. Rhai scripts get `props`, `on_ready`, and `on_update` only — the other hooks fall through to no-ops.
+> There is **no** `on_start`, `on_collision`, or `on_destroy` hook. Use `on_ready` for setup and read the `is_colliding` global for overlap state. Collision *events* exist only as [Blueprint](/docs/r1-alpha7/scripting/blueprints) nodes. Rhai scripts get `props`, `on_ready`, and `on_update` only — the other hooks fall through to no-ops.
 
 ### props()
 
@@ -122,7 +122,7 @@ The flat `gamepad_*` globals mirror the **first connected pad**. Every pad is ad
 | Button held | `gamepad_button(pad, button)` | `gamepad_button(gamepads, pad, button)` | `"south"`, `"l1"`, `"dpad_up"`, … |
 | Button just pressed | `gamepad_button_just_pressed(pad, button)` | `gamepad_button_just_pressed(gamepads, pad, button)` | Down this frame |
 
-Rhai also receives a `gamepads` array in scope (one map per pad with `id`, the axis fields, and `buttons` / `just_pressed` maps) which can be indexed or iterated directly. See [Input Handling — Multiple gamepads](/docs/r1-alpha6/scripting/input#multiple-gamepads).
+Rhai also receives a `gamepads` array in scope (one map per pad with `id`, the axis fields, and `buttons` / `just_pressed` maps) which can be indexed or iterated directly. See [Input Handling — Multiple gamepads](/docs/r1-alpha7/scripting/input#multiple-gamepads).
 
 > All of the globals above are available in **both** backends except the mouse-button set, which is only mirrored into Lua. Rhai receives the time, transform, mouse-position, `camera_yaw`/`camera_ev`, `project_width`/`project_height`, gamepad, collision, timer, health, and parent globals via its scope; use Lua for the action-map and mouse-button helpers below.
 
@@ -164,6 +164,30 @@ end
 ```
 
 `goto_camera_preset(name)` moves the script's **own** entity to the matching preset's stored translation + rotation (it's a transform write, applied after the hook returns). It's a no-op with a console warning if the entity has no `CameraPresets` or no preset matches `name`. Both backends. To read the list generically, use component reflection (`get("CameraPresets...")`).
+
+## Field of view
+
+FOV lives inside Bevy's `Projection` **enum**, which the generic `get`/`set` reflect paths cannot address — so it gets two declared functions instead. Both are degrees, matching the inspector's FOV field. Both backends.
+
+| Function | Description |
+|----------|-------------|
+| `set_fov(degrees)` | Set this camera's vertical field of view. Clamped to 10–170, the same bounds the inspector enforces. A no-op on an orthographic camera. |
+| `camera_fov()` | This camera's vertical field of view in degrees, or **0** if it is orthographic (so a script can tell the difference rather than reading a fake angle). |
+
+```lua
+local base_fov = 0.0
+
+function on_ready()
+    base_fov = camera_fov()
+end
+
+function on_update()
+    -- Breathe the lens by half a degree.
+    set_fov(base_fov + math.sin(elapsed * 0.4) * 0.5)
+end
+```
+
+`camera_fov()` reads a `CameraReadState` mirror that `renzora_engine` refreshes each frame from the projection; it is never saved into a scene. See `assets/scripts/camera_sway.lua` for both functions in use — it breathes the lens *and* scales its rotation amplitudes by FOV, so the sway covers the same fraction of the frame on any lens.
 
 ## Component reflection
 
@@ -311,7 +335,7 @@ end
 
 ## Networking
 
-**Lua only.** Built on the engine's Lightyear layer (native only). See [Multiplayer](/docs/r1-alpha5/multiplayer/overview).
+**Lua only.** Built on the engine's Lightyear layer (native only). See [Multiplayer](/docs/r1-alpha7/multiplayer/overview).
 
 | Function | Description |
 |----------|-------------|
@@ -433,6 +457,7 @@ Domain crates inject extra functions into the VM when their plugin is active. Th
 | `renzora_physics` | `move_controller(x, y, z)` (collide-and-slide), plus re-registered `apply_force(x, y, z)`, `apply_impulse(x, y, z)`, `set_linear_velocity(x, y, z)` (routed through `ScriptAction`) |
 | `renzora_navmesh` | `nav_set_destination(x, y, z)`, `nav_clear_destination()`, `nav_stop()` |
 | `renzora_animation` | `set_anim_param(name, v)`, `set_anim_bool(name, v)`, `set_anim_trigger(name)`, `get_animation_length(name)` |
+| `renzora_engine` (camera) | `set_fov(degrees)`, `camera_fov()` |
 
 ## Capabilities not exposed as functions
 
@@ -440,11 +465,11 @@ The `ScriptCommand` enum (`command.rs`) defines many engine verbs that have **no
 
 `apply_torque`, `set_angular_velocity`, `Raycast`, `tween` / `tween_position` / `tween_rotation` / `tween_scale`, all particle ops (`particle_play`/`burst`/`set_rate`/…), health (`set_health`, `damage`, `heal`, `kill`, `revive`, `set_invincible`), `camera_follow` / `set_camera_target` / `set_camera_zoom`, `spawn_prefab` / `unload_scene`, sprite animation, debug draws (`draw_ray` / `draw_sphere` / `draw_box` / `draw_point`), and `set_light_intensity` / `set_light_color`.
 
-> Do not document these as available globals — the old API draft invented names such as `rpc_send`, `is_server`, `get_network_id`, `raycast_down`, `find_entity_by_name`, `set_camera_fov`, and `terrain_get_height` that **do not exist** in the engine.
+> Do not document these as available globals — the old API draft invented names such as `rpc_send`, `is_server`, `get_network_id`, `raycast_down`, `find_entity_by_name`, and `terrain_get_height` that **do not exist** in the engine. (That list used to include `set_camera_fov`; field of view is now reachable, as `set_fov` / `camera_fov` — see [Field of view](#field-of-view).)
 
 ## Blueprints
 
-Visual [Blueprints](/docs/r1-alpha5/scripting/blueprints) (`.blueprint` / `.bp`, JSON-serialized `BlueprintGraph`) are a separate system. At runtime they are **interpreted directly** by `renzora_blueprint` — walking the graph and emitting the same `ScriptAction` / transform / character commands as text scripts — not compiled to Lua. (The editor's `compile_to_lua` bake to `scripts/bp_<name>.lua` is an export action, not the live path.) Blueprints expose collision, timer, and message *events* (`event/on_collision_enter`, `event/on_timer`, `event/on_message`, …) that text scripts do not have.
+Visual [Blueprints](/docs/r1-alpha7/scripting/blueprints) (`.blueprint` / `.bp`, JSON-serialized `BlueprintGraph`) are a separate system. At runtime they are **interpreted directly** by `renzora_blueprint` — walking the graph and emitting the same `ScriptAction` / transform / character commands as text scripts — not compiled to Lua. (The editor's `compile_to_lua` bake to `scripts/bp_<name>.lua` is an export action, not the live path.) Blueprints expose collision, timer, and message *events* (`event/on_collision_enter`, `event/on_timer`, `event/on_message`, …) that text scripts do not have.
 
 ## Rhai subset
 
@@ -472,8 +497,7 @@ Syntax also differs:
 
 ## See also
 
-- [Lua](/docs/r1-alpha5/scripting/lua) — guided introduction to the full backend
-- [Rhai](/docs/r1-alpha5/scripting/rhai) — the everywhere-including-web backend
-- [Visual Blueprints](/docs/r1-alpha5/scripting/blueprints) — node graphs interpreted at runtime
-- [Input Handling](/docs/r1-alpha5/scripting/input) — the action map and key names
-- [Game UI](/docs/r1-alpha5/scripting/game-ui) — markup, `ui_*` verbs, and bindings
+- [Lua](/docs/r1-alpha7/scripting/lua) — guided introduction to the full backend
+- [Visual Blueprints](/docs/r1-alpha7/scripting/blueprints) — node graphs interpreted at runtime
+- [Input Handling](/docs/r1-alpha7/scripting/input) — the action map and key names
+- [Game UI](/docs/r1-alpha7/scripting/game-ui) — markup, `ui_*` verbs, and bindings
